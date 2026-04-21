@@ -103,7 +103,7 @@ final class SubscriptionService {
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
         restoreCachedStateIfAvailable()
-        startCustomerInfoObserverIfConfigured()
+        applyLocalBuildUnlockState()
     }
 
     deinit {
@@ -140,6 +140,11 @@ final class SubscriptionService {
 
         isBootstrapping = true
         defer { isBootstrapping = false }
+
+        applyLocalBuildUnlockState()
+        isLoading = false
+        return;
+
         startCustomerInfoObserverIfConfigured()
         let hadOptimisticAccess = hasCachedOptimisticAccess
         if !hadOptimisticAccess {
@@ -171,6 +176,10 @@ final class SubscriptionService {
             return
         }
 
+
+        applyLocalBuildUnlockState()
+        return;
+
         startCustomerInfoObserverIfConfigured()
         guard Purchases.isConfigured else {
             return
@@ -187,6 +196,12 @@ final class SubscriptionService {
 
     // Reads the current RevenueCat offerings and normalizes the package list for SwiftUI.
     func loadOfferings() async {
+        currentOffering = nil
+        packageOptions = []
+        isLoading = false
+        lastErrorMessage = nil
+        return;
+
         startCustomerInfoObserverIfConfigured()
         isLoading = true
         lastErrorMessage = nil
@@ -201,6 +216,9 @@ final class SubscriptionService {
         guard !isPurchasing else {
             return
         }
+
+        applyLocalBuildUnlockState()
+        return;
 
         startCustomerInfoObserverIfConfigured()
         guard Purchases.isConfigured else {
@@ -236,6 +254,9 @@ final class SubscriptionService {
         guard !isRestoring else {
             return
         }
+
+        applyLocalBuildUnlockState()
+        return;
 
         startCustomerInfoObserverIfConfigured()
         guard Purchases.isConfigured else {
@@ -328,13 +349,26 @@ private extension SubscriptionService {
     func applyCustomerInfo(_ info: CustomerInfo) {
         customerInfo = info
         let entitlement = info.entitlements.all[AppEnvironment.revenueCatEntitlementName]
-        hasProAccess = entitlement?.isActive == true
+        hasProAccess = true
         hasCachedOptimisticAccess = hasProAccess
         latestPurchaseDate = entitlement?.latestPurchaseDate
         willRenew = entitlement?.willRenew == true
         managementURL = info.managementURL
         lastErrorMessage = nil
         persistCachedState()
+    }
+
+    func applyLocalBuildUnlockState() {
+        customerInfo = nil
+        currentOffering = nil
+        packageOptions = []
+        hasProAccess = true
+        hasCachedOptimisticAccess = true
+        latestPurchaseDate = nil
+        willRenew = false
+        managementURL = nil
+        lastErrorMessage = nil
+        bootstrapState = .ready
     }
 
     // Rehydrates the last known subscription snapshot so launch and foreground recovery are local-first.
@@ -354,6 +388,8 @@ private extension SubscriptionService {
     }
 
     func persistCachedState() {
+        return;
+
         let cachedState = CachedSubscriptionState(
             hasProAccess: hasProAccess,
             latestPurchaseDate: latestPurchaseDate,
