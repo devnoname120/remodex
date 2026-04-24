@@ -576,6 +576,9 @@ extension CodexService {
 
     // Avoids wiping thread/runtime state when reconnecting after a socket that already died.
     func prepareForConnectionAttempt(preserveReconnectIntent: Bool = true) async {
+        availableModels = []
+        modelsErrorMessage = nil
+
         let needsTransportReset = webSocketConnection != nil
             || webSocketTask != nil
             || isConnected

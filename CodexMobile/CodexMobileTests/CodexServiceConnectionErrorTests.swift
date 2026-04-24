@@ -264,4 +264,25 @@ final class CodexServiceConnectionErrorTests: XCTestCase {
         XCTAssertEqual(service.threadRunBadgeState(for: threadID), .running)
         XCTAssertTrue(service.bufferedSecureControlMessages.isEmpty)
     }
+
+    func testPrepareForConnectionAttemptClearsStaleAvailableModelsBeforeReconnect() async {
+        let service = CodexService()
+        service.availableModels = [
+            CodexModelOption(
+                id: "gpt-5.4",
+                model: "gpt-5.4",
+                displayName: "GPT-5.4",
+                description: "Old model list",
+                isDefault: true,
+                supportedReasoningEfforts: [],
+                defaultReasoningEffort: nil
+            ),
+        ]
+        service.modelsErrorMessage = "old model list failure"
+
+        await service.prepareForConnectionAttempt(preserveReconnectIntent: true)
+
+        XCTAssertTrue(service.availableModels.isEmpty)
+        XCTAssertNil(service.modelsErrorMessage)
+    }
 }
