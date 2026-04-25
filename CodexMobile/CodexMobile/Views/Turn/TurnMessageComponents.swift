@@ -1611,7 +1611,9 @@ private struct ThinkingDisclosureView: View {
     }
 
     private func detailText(_ value: String) -> some View {
-        Text(.init(value))
+        // Reasoning/detail text is runtime content from Codex; keep it out of
+        // LocalizedStringKey resolution to avoid recursive SwiftUI text formatting.
+        Text(verbatim: value)
             .font(AppFont.caption())
             .lineSpacing(2)
             .fontWeight(.regular)
