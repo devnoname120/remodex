@@ -1,5 +1,5 @@
 {
-  "originHash" : "d6c8e830c3af2507c85b6babb90e990cc23af12e33321547efbe74748dd03f7f",
+  "originHash" : "4d112863a96fb81a69763eaa42d2d4320b7de08403b4659584174b1da76a7e5d",
   "pins" : [
     {
       "identity" : "purchases-ios-spm",
@@ -31,10 +31,10 @@
     {
       "identity" : "textual",
       "kind" : "remoteSourceControl",
-      "location" : "https://github.com/gonzalezreal/textual.git",
+      "location" : "https://github.com/devnoname120/textual.git",
       "state" : {
-        "revision" : "5b06b811c0f5313b6b84bbef98c635a630638c38",
-        "version" : "0.3.1"
+        "branch" : "main",
+        "revision" : "ac751f2fcfc96309d9330ee9a7356840f964e211"
       }
     }
   ],
