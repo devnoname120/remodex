@@ -13,6 +13,7 @@ struct SidebarView: View {
     @Binding var selectedThread: CodexThread?
     @Binding var showSettings: Bool
     @Binding var isSearchActive: Bool
+    var interactionsEnabled: Bool = true
     var showsInlineCloseButton: Bool = false
     var isVisible: Bool = true
 
@@ -112,6 +113,7 @@ struct SidebarView: View {
         }
         .frame(maxHeight: .infinity)
         .background(Color(.systemBackground))
+        .allowsHitTesting(interactionsEnabled)
         .task {
             debugSidebarLog("task start visible=\(isVisible) threadCount=\(codex.threads.count)")
             rebuildGroupedThreads()
@@ -244,6 +246,7 @@ struct SidebarView: View {
 
     // Shows a native sheet so folder names and full paths stay readable on small screens.
     private func handleNewChatButtonTap() {
+        guard interactionsEnabled else { return }
         if newChatProjectChoices.isEmpty {
             handleNewChatTap(preferredProjectPath: nil)
             return
@@ -253,6 +256,7 @@ struct SidebarView: View {
     }
 
     private func handleNewChatTap(preferredProjectPath: String?) {
+        guard interactionsEnabled else { return }
         Task { @MainActor in
             createThreadErrorMessage = nil
             isCreatingThread = true
@@ -273,6 +277,7 @@ struct SidebarView: View {
     }
 
     private func handleNewWorktreeChatTap(preferredProjectPath: String) {
+        guard interactionsEnabled else { return }
         Task { @MainActor in
             createThreadErrorMessage = nil
             isCreatingThread = true
@@ -293,12 +298,14 @@ struct SidebarView: View {
     }
 
     private func selectThread(_ thread: CodexThread) {
+        guard interactionsEnabled else { return }
         debugSidebarLog("selectThread id=\(thread.id) title=\(thread.displayTitle)")
         searchText = ""
         onOpenThread(thread)
     }
 
     private func openSettings() {
+        guard interactionsEnabled else { return }
         searchText = ""
         showSettings = true
         onClose()
@@ -306,6 +313,7 @@ struct SidebarView: View {
 
     // Archives every live chat in the selected project group and clears the current selection if needed.
     private func archivePendingProjectGroup() {
+        guard interactionsEnabled else { return }
         guard let group = projectGroupPendingArchive else { return }
 
         let threadIDs = SidebarThreadGrouping.liveThreadIDsForProjectGroup(group, in: codex.threads)
