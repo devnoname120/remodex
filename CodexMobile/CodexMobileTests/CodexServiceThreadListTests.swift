@@ -90,3 +90,41 @@ final class CodexServiceThreadListTests: XCTestCase {
         return service
     }
 }
+
+final class CodexPerformanceDiagnosticsTests: XCTestCase {
+    func testVerboseLoggingIsDisabledByDefault() {
+        XCTAssertFalse(
+            CodexPerformanceDiagnostics.makeVerboseLoggingEnabled(
+                arguments: [],
+                environment: [:]
+            )
+        )
+    }
+
+    func testVerboseLoggingCanBeEnabledByLaunchArgument() {
+        XCTAssertTrue(
+            CodexPerformanceDiagnostics.makeVerboseLoggingEnabled(
+                arguments: ["-CodexPerfVerboseLogs"],
+                environment: [:]
+            )
+        )
+    }
+
+    func testVerboseLoggingCanBeEnabledByEnvironmentVariable() {
+        XCTAssertTrue(
+            CodexPerformanceDiagnostics.makeVerboseLoggingEnabled(
+                arguments: [],
+                environment: ["CODEX_PERF_VERBOSE_LOGS": "1"]
+            )
+        )
+    }
+
+    func testVerboseLoggingIgnoresFalseyEnvironmentValues() {
+        XCTAssertFalse(
+            CodexPerformanceDiagnostics.makeVerboseLoggingEnabled(
+                arguments: [],
+                environment: ["CODEX_PERF_VERBOSE_LOGS": "0"]
+            )
+        )
+    }
+}

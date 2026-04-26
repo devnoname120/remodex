@@ -15,15 +15,17 @@ enum TurnTimelineReducer {
 
     // Applies all render-only timeline transforms in one pass.
     static func project(messages: [CodexMessage]) -> TurnTimelineProjection {
-        let visibleMessages = removeHiddenSystemMarkers(in: messages)
-        let reordered = enforceIntraTurnOrder(in: visibleMessages)
-        let collapsedThinking = collapseThinkingMessages(in: reordered)
-        let withoutCommandThinkingEchoes = removeRedundantThinkingCommandActivityMessages(in: collapsedThinking)
-        let dedupedUsers = removeDuplicateUserMessages(in: withoutCommandThinkingEchoes)
-        let dedupedFileChanges = removeDuplicateFileChangeMessages(in: dedupedUsers)
-        let dedupedSubagentActions = removeDuplicateSubagentActionMessages(in: dedupedFileChanges)
-        let dedupedAssistant = removeDuplicateAssistantMessages(in: dedupedSubagentActions)
-        return TurnTimelineProjection(messages: dedupedAssistant)
+        CodexPerformanceDiagnostics.measure("Project Timeline Messages", category: .timeline) {
+            let visibleMessages = removeHiddenSystemMarkers(in: messages)
+            let reordered = enforceIntraTurnOrder(in: visibleMessages)
+            let collapsedThinking = collapseThinkingMessages(in: reordered)
+            let withoutCommandThinkingEchoes = removeRedundantThinkingCommandActivityMessages(in: collapsedThinking)
+            let dedupedUsers = removeDuplicateUserMessages(in: withoutCommandThinkingEchoes)
+            let dedupedFileChanges = removeDuplicateFileChangeMessages(in: dedupedUsers)
+            let dedupedSubagentActions = removeDuplicateSubagentActionMessages(in: dedupedFileChanges)
+            let dedupedAssistant = removeDuplicateAssistantMessages(in: dedupedSubagentActions)
+            return TurnTimelineProjection(messages: dedupedAssistant)
+        }
     }
 
     // Resolves where the viewport should anchor when assistant output starts streaming.

@@ -191,38 +191,40 @@ struct TurnConversationContainerView: View {
         from messages: [CodexMessage],
         planSessionSource: CodexPlanSessionSource?
     ) -> TimelineMessageLayout {
-        var timelineMessages: [CodexMessage] = []
-        timelineMessages.reserveCapacity(messages.count)
-        var pinnedTaskPlanMessage: CodexMessage?
-        var activeStructuredPromptMessage: CodexMessage?
-        let canReplaceComposerWithPrompt = planSessionSource?.isNative == true
+        CodexPerformanceDiagnostics.measure("Rebuild Message Layout", category: .timeline) {
+            var timelineMessages: [CodexMessage] = []
+            timelineMessages.reserveCapacity(messages.count)
+            var pinnedTaskPlanMessage: CodexMessage?
+            var activeStructuredPromptMessage: CodexMessage?
+            let canReplaceComposerWithPrompt = planSessionSource?.isNative == true
 
-        for message in messages {
-            if message.shouldDisplayPinnedPlanAccessory {
-                pinnedTaskPlanMessage = message
-            } else if message.shouldDisplayInlinePlanResult {
-                timelineMessages.append(message)
-            } else if message.isPlanSystemMessage {
-                continue
-            } else {
-                timelineMessages.append(message)
-                if canReplaceComposerWithPrompt,
-                   message.shouldDisplayComposerStructuredPrompt {
-                    activeStructuredPromptMessage = message
+            for message in messages {
+                if message.shouldDisplayPinnedPlanAccessory {
+                    pinnedTaskPlanMessage = message
+                } else if message.shouldDisplayInlinePlanResult {
+                    timelineMessages.append(message)
+                } else if message.isPlanSystemMessage {
+                    continue
+                } else {
+                    timelineMessages.append(message)
+                    if canReplaceComposerWithPrompt,
+                       message.shouldDisplayComposerStructuredPrompt {
+                        activeStructuredPromptMessage = message
+                    }
                 }
             }
-        }
 
-        if let activeStructuredPromptMessage,
-           let activeIndex = timelineMessages.lastIndex(where: { $0.id == activeStructuredPromptMessage.id }) {
-            timelineMessages.remove(at: activeIndex)
-        }
+            if let activeStructuredPromptMessage,
+               let activeIndex = timelineMessages.lastIndex(where: { $0.id == activeStructuredPromptMessage.id }) {
+                timelineMessages.remove(at: activeIndex)
+            }
 
-        return TimelineMessageLayout(
-            timelineMessages: timelineMessages,
-            pinnedTaskPlanMessage: pinnedTaskPlanMessage,
-            activeStructuredPromptMessage: activeStructuredPromptMessage
-        )
+            return TimelineMessageLayout(
+                timelineMessages: timelineMessages,
+                pinnedTaskPlanMessage: pinnedTaskPlanMessage,
+                activeStructuredPromptMessage: activeStructuredPromptMessage
+            )
+        }
     }
 }
 

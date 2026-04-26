@@ -160,50 +160,52 @@ extension CodexService {
     // Fast-paths plain assistant text streaming so one delta does not rebuild every derived row cache.
     // Falls back to the full projection path whenever the visible snapshot shape changed underneath us.
     func updateStreamingAssistantOutput(for threadId: String, messageId: String, rawMessageIndex: Int? = nil) {
-        noteMessagesChanged(for: threadId)
+        CodexPerformanceDiagnostics.measure("Update Streaming Assistant Output", category: .service) {
+            noteMessagesChanged(for: threadId)
 
-        // Keep the visible output anchored to the latest assistant bubble, even if a late
-        // delta updates an older item inside the same turn.
-        let latestAssistantText = syncLatestAssistantOutputCache(for: threadId)
-        if activeThreadId == threadId {
-            currentOutput = latestAssistantText
+            // Keep the visible output anchored to the latest assistant bubble, even if a late
+            // delta updates an older item inside the same turn.
+            let latestAssistantText = syncLatestAssistantOutputCache(for: threadId)
+            if activeThreadId == threadId {
+                currentOutput = latestAssistantText
+            }
+
+            guard let state = threadTimelineStateByThread[threadId],
+                  let rawMessages = messagesByThread[threadId],
+                  let updatedMessageIndex = resolvedMessageIndex(
+                      threadId: threadId,
+                      messageId: messageId,
+                      preferredIndex: rawMessageIndex,
+                      in: rawMessages
+                  ),
+                  rawMessages.indices.contains(updatedMessageIndex),
+                  rawMessages[updatedMessageIndex].id == messageId,
+                  let projectedIndex = state.renderSnapshot.messages.firstIndex(where: { $0.id == messageId }) else {
+                refreshThreadTimelineState(for: threadId)
+                return
+            }
+            let updatedMessage = rawMessages[updatedMessageIndex]
+
+            let revision = messageRevisionByThread[threadId] ?? 0
+            var projectedMessages = state.renderSnapshot.messages
+            projectedMessages[projectedIndex] = updatedMessage
+
+            state.messages = rawMessages
+            state.messageRevision = revision
+            state.renderSnapshot = TurnTimelineRenderSnapshot(
+                threadID: threadId,
+                messages: projectedMessages,
+                planMatchingMessages: state.renderSnapshot.planMatchingMessages,
+                timelineChangeToken: revision,
+                activeTurnID: state.renderSnapshot.activeTurnID,
+                isThreadRunning: state.renderSnapshot.isThreadRunning,
+                latestTurnTerminalState: state.renderSnapshot.latestTurnTerminalState,
+                completedTurnIDs: state.renderSnapshot.completedTurnIDs,
+                stoppedTurnIDs: state.renderSnapshot.stoppedTurnIDs,
+                assistantRevertStatesByMessageID: state.renderSnapshot.assistantRevertStatesByMessageID,
+                repoRefreshSignal: state.renderSnapshot.repoRefreshSignal
+            )
         }
-
-        guard let state = threadTimelineStateByThread[threadId],
-              let rawMessages = messagesByThread[threadId],
-              let updatedMessageIndex = resolvedMessageIndex(
-                  threadId: threadId,
-                  messageId: messageId,
-                  preferredIndex: rawMessageIndex,
-                  in: rawMessages
-              ),
-              rawMessages.indices.contains(updatedMessageIndex),
-              rawMessages[updatedMessageIndex].id == messageId,
-              let projectedIndex = state.renderSnapshot.messages.firstIndex(where: { $0.id == messageId }) else {
-            refreshThreadTimelineState(for: threadId)
-            return
-        }
-        let updatedMessage = rawMessages[updatedMessageIndex]
-
-        let revision = messageRevisionByThread[threadId] ?? 0
-        var projectedMessages = state.renderSnapshot.messages
-        projectedMessages[projectedIndex] = updatedMessage
-
-        state.messages = rawMessages
-        state.messageRevision = revision
-        state.renderSnapshot = TurnTimelineRenderSnapshot(
-            threadID: threadId,
-            messages: projectedMessages,
-            planMatchingMessages: state.renderSnapshot.planMatchingMessages,
-            timelineChangeToken: revision,
-            activeTurnID: state.renderSnapshot.activeTurnID,
-            isThreadRunning: state.renderSnapshot.isThreadRunning,
-            latestTurnTerminalState: state.renderSnapshot.latestTurnTerminalState,
-            completedTurnIDs: state.renderSnapshot.completedTurnIDs,
-            stoppedTurnIDs: state.renderSnapshot.stoppedTurnIDs,
-            assistantRevertStatesByMessageID: state.renderSnapshot.assistantRevertStatesByMessageID,
-            repoRefreshSignal: state.renderSnapshot.repoRefreshSignal
-        )
     }
 
     // Returns the currently running turn id for a specific thread, if any.
@@ -2862,56 +2864,58 @@ extension CodexService {
 
     // Rebuilds one thread's render snapshot from service-owned caches after any timeline mutation.
     func refreshThreadTimelineState(for threadId: String) {
-        let state = timelineState(for: threadId)
-        let messages = messagesByThread[threadId] ?? []
-        let revision = messageRevisionByThread[threadId] ?? 0
-        let activeTurnID = activeTurnIdByThread[threadId]
-        let isThreadRunning = threadHasActiveOrRunningTurn(threadId)
-        let projectionSourceMessages = snapshotProjectionSourceMessages(from: messages)
-        let stoppedTurnIDs = rebuildStoppedTurnIDs(for: threadId, messages: projectionSourceMessages)
-        let latestTurnTerminalState = latestTurnTerminalStateByThread[threadId]
-        let projectedMessages = TurnTimelineReducer.project(messages: projectionSourceMessages).messages
-        let planMatchingMessages = messages.filter { $0.kind == .userInputPrompt }
-        let completedTurnIDs = Set(
-            projectedMessages.compactMap { message -> String? in
-                guard let turnId = message.turnId,
-                      terminalStateByTurnID[turnId] == .completed else {
-                    return nil
+        CodexPerformanceDiagnostics.measure("Refresh Thread Timeline", category: .service) {
+            let state = timelineState(for: threadId)
+            let messages = messagesByThread[threadId] ?? []
+            let revision = messageRevisionByThread[threadId] ?? 0
+            let activeTurnID = activeTurnIdByThread[threadId]
+            let isThreadRunning = threadHasActiveOrRunningTurn(threadId)
+            let projectionSourceMessages = snapshotProjectionSourceMessages(from: messages)
+            let stoppedTurnIDs = rebuildStoppedTurnIDs(for: threadId, messages: projectionSourceMessages)
+            let latestTurnTerminalState = latestTurnTerminalStateByThread[threadId]
+            let projectedMessages = TurnTimelineReducer.project(messages: projectionSourceMessages).messages
+            let planMatchingMessages = messages.filter { $0.kind == .userInputPrompt }
+            let completedTurnIDs = Set(
+                projectedMessages.compactMap { message -> String? in
+                    guard let turnId = message.turnId,
+                          terminalStateByTurnID[turnId] == .completed else {
+                        return nil
+                    }
+                    return turnId
                 }
-                return turnId
-            }
-        )
-        let repoRefreshSignal = buildRepoRefreshSignal(for: projectionSourceMessages)
-        latestRepoAffectingMessageSignalByThread[threadId] = repoRefreshSignal
-        let assistantRevertStates = assistantRevertStates(
-            for: threadId,
-            projectedMessages: projectedMessages,
-            workingDirectory: gitWorkingDirectory(for: threadId),
-            messageRevision: revision,
-            revertStateRevision: assistantRevertStateRevision
-        )
+            )
+            let repoRefreshSignal = buildRepoRefreshSignal(for: projectionSourceMessages)
+            latestRepoAffectingMessageSignalByThread[threadId] = repoRefreshSignal
+            let assistantRevertStates = assistantRevertStates(
+                for: threadId,
+                projectedMessages: projectedMessages,
+                workingDirectory: gitWorkingDirectory(for: threadId),
+                messageRevision: revision,
+                revertStateRevision: assistantRevertStateRevision
+            )
 
-        state.messages = messages
-        state.messageRevision = revision
-        state.activeTurnID = activeTurnID
-        state.isThreadRunning = isThreadRunning
-        state.latestTurnTerminalState = latestTurnTerminalState
-        state.completedTurnIDs = completedTurnIDs
-        state.stoppedTurnIDs = stoppedTurnIDs
-        state.repoRefreshSignal = repoRefreshSignal
-        state.renderSnapshot = TurnTimelineRenderSnapshot(
-            threadID: threadId,
-            messages: projectedMessages,
-            planMatchingMessages: planMatchingMessages,
-            timelineChangeToken: revision,
-            activeTurnID: activeTurnID,
-            isThreadRunning: isThreadRunning,
-            latestTurnTerminalState: latestTurnTerminalState,
-            completedTurnIDs: completedTurnIDs,
-            stoppedTurnIDs: stoppedTurnIDs,
-            assistantRevertStatesByMessageID: assistantRevertStates,
-            repoRefreshSignal: repoRefreshSignal
-        )
+            state.messages = messages
+            state.messageRevision = revision
+            state.activeTurnID = activeTurnID
+            state.isThreadRunning = isThreadRunning
+            state.latestTurnTerminalState = latestTurnTerminalState
+            state.completedTurnIDs = completedTurnIDs
+            state.stoppedTurnIDs = stoppedTurnIDs
+            state.repoRefreshSignal = repoRefreshSignal
+            state.renderSnapshot = TurnTimelineRenderSnapshot(
+                threadID: threadId,
+                messages: projectedMessages,
+                planMatchingMessages: planMatchingMessages,
+                timelineChangeToken: revision,
+                activeTurnID: activeTurnID,
+                isThreadRunning: isThreadRunning,
+                latestTurnTerminalState: latestTurnTerminalState,
+                completedTurnIDs: completedTurnIDs,
+                stoppedTurnIDs: stoppedTurnIDs,
+                assistantRevertStatesByMessageID: assistantRevertStates,
+                repoRefreshSignal: repoRefreshSignal
+            )
+        }
     }
 
     // Bounds expensive render-only projection work to the recent transcript tail.

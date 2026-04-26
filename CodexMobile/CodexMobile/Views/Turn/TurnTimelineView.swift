@@ -442,7 +442,6 @@ struct TurnTimelineView<EmptyState: View, Composer: View>: View {
     @State private var isUserDraggingScroll = false
     @State private var userScrollCooldownUntil: Date?
     @State private var scrollGeometryCoalescer = ScrollGeometryCoalescer()
-    @State private var timelineDebugSequence = 0
     @State private var lastTimelineGeometryLogBucket: Int?
 
     /// The tail slice of messages currently rendered in the timeline.
@@ -669,33 +668,35 @@ struct TurnTimelineView<EmptyState: View, Composer: View>: View {
     }
 
     private func recomputeBlockInfoIfNeeded() {
-        let visible = Array(visibleMessages)
-        let key = blockInfoInputKey(for: visible)
-        guard key != blockInfoInputKey else { return }
-        blockInfoInputKey = key
+        CodexPerformanceDiagnostics.measure("Recompute Timeline Block Info", category: .timeline) {
+            let visible = Array(visibleMessages)
+            let key = blockInfoInputKey(for: visible)
+            guard key != blockInfoInputKey else { return }
+            blockInfoInputKey = key
 
-        let cachedBlockInfo = Self.assistantBlockInfo(
-            for: visible,
-            activeTurnID: activeTurnID,
-            isThreadRunning: isThreadRunning,
-            latestTurnTerminalState: latestTurnTerminalState,
-            stoppedTurnIDs: stoppedTurnIDs,
-            revertStatesByMessageID: assistantRevertStatesByMessageID
-        )
+            let cachedBlockInfo = Self.assistantBlockInfo(
+                for: visible,
+                activeTurnID: activeTurnID,
+                isThreadRunning: isThreadRunning,
+                latestTurnTerminalState: latestTurnTerminalState,
+                stoppedTurnIDs: stoppedTurnIDs,
+                revertStatesByMessageID: assistantRevertStatesByMessageID
+            )
 
-        let updated = [String: AssistantBlockAccessoryState](
-            uniqueKeysWithValues: zip(visible, cachedBlockInfo).compactMap { message, blockText in
-                guard let blockText else { return nil }
-                return (message.id, blockText)
+            let updated = [String: AssistantBlockAccessoryState](
+                uniqueKeysWithValues: zip(visible, cachedBlockInfo).compactMap { message, blockText in
+                    guard let blockText else { return nil }
+                    return (message.id, blockText)
+                }
+            )
+            if updated != cachedBlockInfoByMessageID {
+                cachedBlockInfoByMessageID = updated
             }
-        )
-        if updated != cachedBlockInfoByMessageID {
-            cachedBlockInfoByMessageID = updated
-        }
 
-        let newestStreamingMessageID = visible.last(where: { $0.isStreaming })?.id
-        if newestStreamingMessageID != cachedNewestStreamingMessageID {
-            cachedNewestStreamingMessageID = newestStreamingMessageID
+            let newestStreamingMessageID = visible.last(where: { $0.isStreaming })?.id
+            if newestStreamingMessageID != cachedNewestStreamingMessageID {
+                cachedNewestStreamingMessageID = newestStreamingMessageID
+            }
         }
     }
 
@@ -1319,6 +1320,9 @@ struct TurnTimelineView<EmptyState: View, Composer: View>: View {
     }
 
     private func logTimelineGeometryChangeIfNeeded(old: ScrollBottomGeometry, new: ScrollBottomGeometry) {
+        guard CodexPerformanceDiagnostics.verboseLoggingEnabled else {
+            return
+        }
         let delta = max(
             abs(new.contentHeight - old.contentHeight),
             abs(new.viewportHeight - old.viewportHeight)
@@ -1335,9 +1339,12 @@ struct TurnTimelineView<EmptyState: View, Composer: View>: View {
         )
     }
 
-    private func debugTimelineLog(_ message: String) {
-        timelineDebugSequence += 1
-        print("[TimelineDebug] #\(timelineDebugSequence) \(message)")
+    private func debugTimelineLog(_ message: @autoclosure () -> String) {
+        guard CodexPerformanceDiagnostics.verboseLoggingEnabled else {
+            return
+        }
+        let sequence = CodexPerformanceDiagnostics.nextDebugSequence(for: .timeline)
+        print("[TimelineDebug] #\(sequence) \(message())")
     }
 }
 

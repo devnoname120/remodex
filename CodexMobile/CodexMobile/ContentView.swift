@@ -847,6 +847,7 @@ struct ContentView: View {
     }
 
     private func beginSidebarGestureDebugIfNeeded(kind: String, startX: CGFloat) {
+        guard CodexPerformanceDiagnostics.verboseLoggingEnabled else { return }
         guard activeSidebarGestureDebugID == nil else { return }
         sidebarGestureDebugSequence += 1
         activeSidebarGestureDebugID = sidebarGestureDebugSequence
@@ -858,6 +859,7 @@ struct ContentView: View {
     }
 
     private func logSidebarGestureProgressIfNeeded(translation: CGFloat) {
+        guard CodexPerformanceDiagnostics.verboseLoggingEnabled else { return }
         guard let gestureID = activeSidebarGestureDebugID else { return }
         let bucket = max(0, Int(translation / sidebarGestureLogBucketWidth))
         guard bucket != lastSidebarGestureLogBucket else { return }
@@ -869,12 +871,16 @@ struct ContentView: View {
     }
 
     private func resetSidebarGestureDebug() {
+        guard CodexPerformanceDiagnostics.verboseLoggingEnabled else { return }
         activeSidebarGestureDebugID = nil
         lastSidebarGestureLogBucket = nil
     }
 
-    private func debugSidebarLog(_ message: String) {
-        print("[SidebarDebug] \(message)")
+    private func debugSidebarLog(_ message: @autoclosure () -> String) {
+        guard CodexPerformanceDiagnostics.verboseLoggingEnabled else {
+            return
+        }
+        print("[SidebarDebug] \(message())")
     }
 
     // Uses the responder chain instead of per-view bindings so mixed SwiftUI/UIKit inputs all close together.
