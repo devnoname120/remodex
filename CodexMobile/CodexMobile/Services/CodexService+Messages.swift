@@ -2927,9 +2927,13 @@ extension CodexService {
 
     private func assistantDeltaStreamID(threadId: String, turnId: String, itemId: String?) -> String {
         let normalizedTurnId = turnId.trimmingCharacters(in: .whitespacesAndNewlines)
-        let itemComponent = itemId?.trimmingCharacters(in: .whitespacesAndNewlines).flatMap {
-            $0.isEmpty ? nil : $0
-        } ?? "__turn__"
+        let itemComponent: String
+        if let trimmedItemId = itemId?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !trimmedItemId.isEmpty {
+            itemComponent = trimmedItemId
+        } else {
+            itemComponent = "__turn__"
+        }
         return "\(threadId)|\(normalizedTurnId)|\(itemComponent)"
     }
 

@@ -782,6 +782,22 @@ final class CodexServiceIncomingRunIndicatorTests: XCTestCase {
         XCTAssertEqual(service.timelineState(for: threadID).renderSnapshot.messages.first?.text, "First chunk")
     }
 
+    func testAssistantStreamingWithoutItemIDUsesTurnScopedBatchFallback() {
+        let service = makeService()
+        let threadID = "thread-\(UUID().uuidString)"
+        let turnID = "turn-\(UUID().uuidString)"
+
+        service.appendAssistantDelta(threadId: threadID, turnId: turnID, itemId: nil, delta: "First")
+        service.appendAssistantDelta(threadId: threadID, turnId: turnID, itemId: nil, delta: " chunk")
+        service.finalizeAllStreamingState()
+
+        let assistantMessages = service.messages(for: threadID).filter { $0.role == .assistant }
+        XCTAssertEqual(assistantMessages.count, 1)
+        XCTAssertNil(assistantMessages[0].itemId)
+        XCTAssertEqual(assistantMessages[0].text, "First chunk")
+        XCTAssertFalse(assistantMessages[0].isStreaming)
+    }
+
     func testLateDeltaForOlderAssistantItemDoesNotReplaceLatestOutput() {
         let service = makeService()
         let threadID = "thread-\(UUID().uuidString)"
