@@ -6,6 +6,7 @@
 //   ThinkingDisclosureParser, CodeCommentDirectiveParser, TurnFileChangeSummaryParser,
 //   TurnMessageCaches, TurnMarkdownModels, TurnDiffRenderer, CommandExecutionViews
 
+import ImageIO
 import SwiftUI
 import Textual
 import UIKit
@@ -38,32 +39,78 @@ func timelineDisplayText(for message: CodexMessage) -> String {
 
 // ─── File-Change Recap UI ─────────────────────────────────────
 
-// MARK: - FileChangeInlineActionRow
-// Compact row: small gray action label on top, filename (blue) + +/- counts below.
-private struct FileChangeInlineActionRow: View {
-    let entry: TurnFileChangeSummaryEntry
-    var showActionLabel: Bool = true
+// MARK: - FileChangeSummaryBox
+// Renders turn-end file edits as one compact recap instead of chat-like rows.
+private struct FileChangeSummaryBox: View {
+    let entries: [TurnFileChangeSummaryEntry]
+    let fallbackText: String
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            if showActionLabel {
-                Text(entry.action?.rawValue ?? "Edited")
-                    .font(AppFont.caption())
-                    .foregroundStyle(.secondary.opacity(0.6))
-            }
+        VStack(alignment: .leading, spacing: 0) {
+            Text(title)
+                .font(AppFont.mono(.caption))
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 12)
+                .padding(.top, 10)
+                .padding(.bottom, entries.isEmpty ? 10 : 8)
 
-            HStack(spacing: 6) {
-                Text(entry.compactPath)
-                    .foregroundStyle(Color.blue)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
+            if !entries.isEmpty {
+                Divider()
 
-                DiffCountsLabel(additions: entry.additions, deletions: entry.deletions)
-                    .font(AppFont.mono(.caption))
+                ForEach(entries.indices, id: \.self) { index in
+                    let entry = entries[index]
+                    let isLastEntry = index == entries.index(before: entries.endIndex)
+
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        Text(entry.compactPath)
+                            .font(AppFont.mono(.subheadline))
+                            .foregroundStyle(.primary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+
+                        Spacer(minLength: 8)
+
+                        if entry.additions > 0 || entry.deletions > 0 {
+                            DiffCountsLabel(additions: entry.additions, deletions: entry.deletions)
+                                .font(AppFont.mono(.caption))
+                        }
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 9)
+
+                    if !isLastEntry {
+                        Divider()
+                            .padding(.leading, 12)
+                    }
+                }
+            } else if !fallbackText.isEmpty {
+                Text(fallbackText)
+                    .font(AppFont.footnote())
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 12)
+                    .padding(.bottom, 10)
             }
-            .font(AppFont.body())
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            Color(.secondarySystemBackground).opacity(0.45),
+            in: RoundedRectangle(cornerRadius: 8, style: .continuous)
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .stroke(Color(.separator).opacity(0.65), lineWidth: 1)
+        }
+    }
+
+    private var title: String {
+        let count = entries.count
+        if count == 0 {
+            return "Files modified"
+        }
+        if count == 1 {
+            return "1 File modified"
+        }
+        return "\(count) Files modified"
     }
 }
 
@@ -646,6 +693,151 @@ private enum AttachmentPreviewImageResolver {
     }
 }
 
+private struct AssistantMarkdownImagePreviewButton: View {
+    let reference: AssistantMarkdownImageReference
+    let currentWorkingDirectory: String?
+
+    @Environment(CodexService.self) private var codex
+    @State private var previewRequest: AssistantWorkspaceImagePreviewRequest?
+    @State private var loadedPreview: PreviewImagePayload?
+    @State private var isAutoLoadingPreview = false
+    @State private var didAttemptAutoPreviewLoad = false
+
+    private static let cornerRadius: CGFloat = 18
+    private static let maxWidth: CGFloat = 200
+
+    var body: some View {
+        Button {
+            HapticFeedback.shared.triggerImpactFeedback(style: .light)
+            openPreview()
+        } label: {
+            content
+        }
+        .buttonStyle(.plain)
+        .task(id: autoPreviewLoadKey) {
+            await loadPreviewAfterChatSettlesIfNeeded()
+        }
+        .fullScreenCover(item: $previewRequest) { request in
+            AssistantWorkspaceImagePreviewScreen(
+                reference: request.reference,
+                currentWorkingDirectory: request.currentWorkingDirectory,
+                initialPayload: request.initialPayload,
+                onDismiss: { previewRequest = nil }
+            )
+        }
+    }
+
+    @ViewBuilder
+    private var content: some View {
+        if let loadedPreview {
+            loadedImage(loadedPreview)
+        } else {
+            metadataCard
+        }
+    }
+
+    private func loadedImage(_ payload: PreviewImagePayload) -> some View {
+        Image(uiImage: payload.image)
+            .resizable()
+            .scaledToFit()
+            .frame(maxWidth: Self.maxWidth, alignment: .leading)
+            .clipShape(RoundedRectangle(cornerRadius: Self.cornerRadius, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: Self.cornerRadius, style: .continuous)
+                    .stroke(Color.primary.opacity(0.06), lineWidth: 0.5)
+            )
+            .contentShape(RoundedRectangle(cornerRadius: Self.cornerRadius, style: .continuous))
+    }
+
+    private var metadataCard: some View {
+        HStack(spacing: 12) {
+            ZStack {
+                Circle()
+                    .fill(Color.accentColor.opacity(0.12))
+                if isAutoLoadingPreview {
+                    ProgressView()
+                        .controlSize(.mini)
+                        .tint(Color.accentColor)
+                } else {
+                    Image(systemName: "photo")
+                        .font(AppFont.system(size: 15, weight: .semibold))
+                        .foregroundStyle(Color.accentColor)
+                }
+            }
+            .frame(width: 32, height: 32)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(reference.fileName.isEmpty ? "Generated image" : reference.fileName)
+                    .font(AppFont.subheadline(weight: .semibold))
+                    .foregroundStyle(.primary)
+                Text(reference.path)
+                    .font(AppFont.mono(.caption))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+
+            Spacer(minLength: 0)
+
+            Image(systemName: "arrow.up.left.and.arrow.down.right")
+                .font(AppFont.system(size: 14, weight: .semibold))
+                .foregroundStyle(.secondary)
+        }
+        .padding(12)
+        .frame(maxWidth: Self.maxWidth, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: Self.cornerRadius, style: .continuous)
+                .fill(Color(.secondarySystemBackground))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: Self.cornerRadius, style: .continuous)
+                .stroke(Color.primary.opacity(0.06), lineWidth: 0.5)
+        )
+    }
+
+    private func openPreview() {
+        previewRequest = AssistantWorkspaceImagePreviewRequest(
+            reference: reference,
+            currentWorkingDirectory: currentWorkingDirectory,
+            initialPayload: loadedPreview
+        )
+    }
+
+    private var autoPreviewLoadKey: String {
+        "\(reference.id)|\(codex.connectionPhase)"
+    }
+
+    private var canAutoLoadPreview: Bool {
+        codex.connectionPhase == .connected
+    }
+
+    @MainActor
+    private func loadPreviewAfterChatSettlesIfNeeded() async {
+        guard canAutoLoadPreview,
+              loadedPreview == nil,
+              !isAutoLoadingPreview,
+              !didAttemptAutoPreviewLoad else {
+            return
+        }
+
+        do {
+            // Give post-connect UI reconciliation a beat before starting image reads.
+            try await Task.sleep(nanoseconds: 300_000_000)
+            guard canAutoLoadPreview, loadedPreview == nil else { return }
+            didAttemptAutoPreviewLoad = true
+            isAutoLoadingPreview = true
+            defer { isAutoLoadingPreview = false }
+            loadedPreview = try await AssistantWorkspaceImagePreviewLoader.load(
+                reference: reference,
+                currentWorkingDirectory: currentWorkingDirectory,
+                codex: codex
+            )
+        } catch {
+            // Inline auto-load stays silent; the fullscreen sheet owns visible errors and retry.
+        }
+    }
+}
+
 // ─── Message row ────────────────────────────────────────────────────
 
 private struct UserBubbleTextBlock<Content: View>: View {
@@ -709,6 +901,7 @@ struct MessageRow: View, Equatable {
     var allowsAssistantPlanFallbackRecovery: Bool = false
     var assistantTurnCompleted: Bool = false
     var threadMessagesForPlanMatching: [CodexMessage] = []
+    var currentWorkingDirectory: String? = nil
     // Narrow token for inferred-plan fallback invalidation; this changes only when the
     // relevant native structured prompts change, not on every unrelated service mutation.
     var planMatchingFingerprint: Int = 0
@@ -731,6 +924,7 @@ struct MessageRow: View, Equatable {
             && lhs.planSessionSource == rhs.planSessionSource
             && lhs.allowsAssistantPlanFallbackRecovery == rhs.allowsAssistantPlanFallbackRecovery
             && lhs.assistantTurnCompleted == rhs.assistantTurnCompleted
+            && lhs.currentWorkingDirectory == rhs.currentWorkingDirectory
             && lhs.planMatchingFingerprint == rhs.planMatchingFingerprint
             && lhs.showsStreamingAnimations == rhs.showsStreamingAnimations
     }
@@ -854,7 +1048,7 @@ struct MessageRow: View, Equatable {
         }
     }
 
-    // Renders inline @file and $skill mentions inside one AttributedString so large
+    // Renders inline @file/plugin and $skill mentions inside one AttributedString so large
     // messages do not build an arbitrarily deep SwiftUI Text concatenation chain.
     private func userBubbleText(_ rawText: String) -> Text {
         let normalizedRawText = SkillReferenceFormatter.replacingSkillReferences(
@@ -941,7 +1135,9 @@ struct MessageRow: View, Equatable {
             let (normalizedToken, trailingPunctuation) = normalizedMentionToken(rawToken)
             let fullMatch = nsText.substring(with: matchRange)
             let normalizedConfirmedToken = TurnMessageRegexCache.removingTrailingLineColumnSuffix(from: normalizedToken)
-            if trigger == "@", !confirmedFileMentions.contains(normalizedConfirmedToken) {
+            let isConfirmedFileMention = confirmedFileMentions.contains(normalizedConfirmedToken)
+            let isPluginMention = trigger == "@" && isLikelyPluginMention(normalizedToken)
+            if trigger == "@", !isConfirmedFileMention, !isPluginMention {
                 attributed.append(AttributedString(fullMatch))
                 cursor = matchRange.location + matchRange.length
                 continue
@@ -951,9 +1147,12 @@ struct MessageRow: View, Equatable {
                 let displayName: String
                 let color: Color
 
-                if trigger == "@" {
+                if trigger == "@", isConfirmedFileMention {
                     let fileName = (normalizedToken as NSString).lastPathComponent
                     displayName = fileName.isEmpty ? normalizedToken : fileName
+                    color = .blue
+                } else if trigger == "@" {
+                    displayName = SkillDisplayNameFormatter.displayName(for: normalizedToken)
                     color = .blue
                 } else {
                     displayName = SkillDisplayNameFormatter.displayName(for: normalizedToken)
@@ -981,6 +1180,19 @@ struct MessageRow: View, Equatable {
         }
 
         return attributed
+    }
+
+    // Keeps plugin coloring to app-style slugs so Swift attributes and scoped build labels stay plain.
+    private func isLikelyPluginMention(_ token: String) -> Bool {
+        let normalized = token.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let first = normalized.first,
+              first.isLowercase || first.isNumber else {
+            return false
+        }
+
+        return normalized.allSatisfy { character in
+            character.isLetter || character.isNumber || character == "-" || character == "_"
+        }
     }
 
     private func assistantView(text: String, renderModel: MessageRowRenderModel) -> some View {
@@ -1027,16 +1239,37 @@ struct MessageRow: View, Equatable {
             && visibleAssistantText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             && inferredQuestionnaire == nil
             && mermaidContent == nil
-        // Prefer copying the exact assistant block the user can see instead of the
-        // whole non-user turn aggregate assembled by the timeline footer cache.
+        let usesCachedAssistantImageContent = !message.isStreaming && visibleAssistantText == bodyText
+        let assistantImageReferences = usesCachedAssistantImageContent
+            ? renderModel.assistantImageReferences
+            : []
+        let assistantInlineContentSegments = usesCachedAssistantImageContent
+            ? renderModel.assistantInlineContentSegments
+            : []
+        let trailingAssistantImageReferences = assistantImageReferences.filter { !$0.isTemporaryScreenshotImage }
+        let visibleAssistantTextWithoutImageSyntax = assistantImageReferences.isEmpty
+            ? visibleAssistantText
+            : (renderModel.assistantTextWithoutImageSyntax ?? visibleAssistantText)
+        let trimmedVisibleAssistantText = visibleAssistantTextWithoutImageSyntax
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let hasVisibleAssistantText = !trimmedVisibleAssistantText.isEmpty
+        let rendersTemporaryImagesInline = !assistantInlineContentSegments.isEmpty
+            && !message.isStreaming
+            && mermaidContent == nil
+            && proposedPlan == nil
+            && inferredQuestionnaire == nil
+        let hasRenderableAssistantContent = hasVisibleAssistantText
+            || proposedPlan != nil
+            || !trailingAssistantImageReferences.isEmpty
+            || rendersTemporaryImagesInline
+        // Copy only the visible prose. Image-only artifact rows should not expose a
+        // second copy affordance for the hidden markdown image syntax.
         let assistantCopyText: String? = {
-            let trimmedVisibleText = visibleAssistantText.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !trimmedVisibleText.isEmpty {
-                return trimmedVisibleText
+            if !trimmedVisibleAssistantText.isEmpty {
+                return trimmedVisibleAssistantText
             }
-            return assistantBlockAccessoryState?.copyText
+            return trailingAssistantImageReferences.isEmpty ? assistantBlockAccessoryState?.copyText : nil
         }()
-        let hasRenderableAssistantContent = !visibleAssistantText.isEmpty || proposedPlan != nil
         return VStack(alignment: .leading, spacing: 8) {
             if let commentContent, commentContent.hasFindings {
                 VStack(alignment: .leading, spacing: 10) {
@@ -1087,19 +1320,51 @@ struct MessageRow: View, Equatable {
                         isStreaming: message.isStreaming,
                         canImplement: assistantTurnCompleted
                     )
+                } else if rendersTemporaryImagesInline {
+                    ForEach(assistantInlineContentSegments) { segment in
+                        switch segment {
+                        case .text(_, let segmentText):
+                            MarkdownTextView(
+                                text: segmentText,
+                                profile: .assistantProse,
+                                enablesSelection: enablesInlineMarkdownSelectionInTimeline,
+                                constrainsToAvailableWidth: true
+                            )
+                        case .image(let reference):
+                            AssistantMarkdownImagePreviewButton(
+                                reference: reference,
+                                currentWorkingDirectory: currentWorkingDirectory
+                            )
+                        }
+                    }
                 } else if message.isStreaming {
-                    StreamingAssistantMarkdownTextView(
-                        text: visibleAssistantText,
-                        enablesSelection: enablesInlineMarkdownSelectionInTimeline,
-                        constrainsToAvailableWidth: true
-                    )
+                    if hasVisibleAssistantText {
+                        StreamingAssistantMarkdownTextView(
+                            text: visibleAssistantTextWithoutImageSyntax,
+                            enablesSelection: enablesInlineMarkdownSelectionInTimeline,
+                            constrainsToAvailableWidth: true
+                        )
+                    }
                 } else {
-                    MarkdownTextView(
-                        text: visibleAssistantText,
-                        profile: .assistantProse,
-                        enablesSelection: enablesInlineMarkdownSelectionInTimeline,
-                        constrainsToAvailableWidth: true
-                    )
+                    if hasVisibleAssistantText {
+                        MarkdownTextView(
+                            text: visibleAssistantTextWithoutImageSyntax,
+                            profile: .assistantProse,
+                            enablesSelection: enablesInlineMarkdownSelectionInTimeline,
+                            constrainsToAvailableWidth: true
+                        )
+                    }
+                }
+
+                if !trailingAssistantImageReferences.isEmpty {
+                    VStack(alignment: .leading, spacing: 6) {
+                        ForEach(trailingAssistantImageReferences) { reference in
+                            AssistantMarkdownImagePreviewButton(
+                                reference: reference,
+                                currentWorkingDirectory: currentWorkingDirectory
+                            )
+                        }
+                    }
                 }
             }
 
@@ -1207,20 +1472,10 @@ struct MessageRow: View, Equatable {
         let actionEntries = renderState.actionEntries
         let hasActionRows = !actionEntries.isEmpty
         let allEntries = hasActionRows ? actionEntries : (renderState.summary?.entries ?? [])
-        let grouped = renderModel.fileChangeGroups
+        let fallbackText = renderState.bodyText.trimmingCharacters(in: .whitespacesAndNewlines)
 
         return VStack(alignment: .leading, spacing: 8) {
-            ForEach(grouped, id: \.key) { group in
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(group.key)
-                        .font(AppFont.caption())
-                        .foregroundStyle(.secondary.opacity(0.6))
-
-                    ForEach(group.entries) { entry in
-                        FileChangeInlineActionRow(entry: entry, showActionLabel: false)
-                    }
-                }
-            }
+            FileChangeSummaryBox(entries: allEntries, fallbackText: fallbackText)
 
             if message.isStreaming && showsStreamingAnimations {
                 TypingIndicator()
@@ -1473,7 +1728,7 @@ struct MessageRow: View, Equatable {
         }
 
         assistantDisplayUpdateTask = Task { @MainActor in
-            try? await Task.sleep(nanoseconds: 80_000_000)
+            try? await Task.sleep(nanoseconds: 100_000_000)
             guard !Task.isCancelled else { return }
             throttledAssistantDisplayText = pendingAssistantDisplayText ?? nextText
             assistantDisplayUpdateTask = nil
@@ -1727,27 +1982,461 @@ private struct CommandExecutionStatusCard: View {
     let itemId: String?
     @Environment(CodexService.self) private var codex
     @State private var isShowingDetailSheet = false
+    @State private var isLoadingImagePreview = false
+    @State private var imagePreviewError: String?
+    @State private var previewImage: PreviewImagePayload?
 
     var body: some View {
-        CommandExecutionCardBody(
-            command: status.command,
-            statusLabel: status.statusLabel,
-            accent: status.accent
-        )
-            .contentShape(Rectangle())
-            .onTapGesture {
-                HapticFeedback.shared.triggerImpactFeedback(style: .light)
-                isShowingDetailSheet = true
+        VStack(alignment: .leading, spacing: 8) {
+            CommandExecutionCardBody(
+                command: status.command,
+                statusLabel: status.statusLabel,
+                accent: status.accent
+            )
+                .contentShape(Rectangle())
+                .onTapGesture {
+                    HapticFeedback.shared.triggerImpactFeedback(style: .light)
+                    isShowingDetailSheet = true
+                }
+
+            if let imageReference {
+                commandImagePreviewButton(for: imageReference)
             }
+        }
             .sheet(isPresented: $isShowingDetailSheet) {
                 CommandExecutionDetailSheet(status: status, details: detailModel)
                     .presentationDetents([.fraction(0.35), .medium])
             }
+            .fullScreenCover(item: $previewImage) { payload in
+                ZoomableImagePreviewScreen(
+                    payload: payload,
+                    onDismiss: { previewImage = nil }
+                )
+            }
+            .alert("Image Preview", isPresented: imagePreviewErrorIsPresented, actions: {
+                Button("OK", role: .cancel) {
+                    imagePreviewError = nil
+                }
+            }, message: {
+                Text(imagePreviewError ?? "")
+            })
     }
 
     private var detailModel: CommandExecutionDetails? {
         guard let itemId else { return nil }
         return codex.commandExecutionDetailsByItemID[itemId]
+    }
+
+    private var imageReference: CommandOutputImageReference? {
+        guard let details = detailModel else {
+            return nil
+        }
+        return CommandOutputImageReferenceParser.firstReference(
+            command: details.fullCommand,
+            outputTail: details.outputTail,
+            cwd: details.cwd
+        )
+    }
+
+    private func commandImagePreviewButton(for reference: CommandOutputImageReference) -> some View {
+        Button {
+            HapticFeedback.shared.triggerImpactFeedback(style: .light)
+            loadImagePreview(reference)
+        } label: {
+            HStack(spacing: 8) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .fill(Color(.secondarySystemFill))
+                    if isLoadingImagePreview {
+                        ProgressView()
+                            .controlSize(.small)
+                    } else {
+                        Image(systemName: "photo")
+                            .font(AppFont.system(size: 14, weight: .semibold))
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .frame(width: 32, height: 32)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Image")
+                        .font(AppFont.caption(weight: .medium))
+                        .foregroundStyle(.secondary)
+                    Text(reference.fileName)
+                        .font(AppFont.mono(.caption))
+                        .foregroundStyle(.primary.opacity(0.78))
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+
+                Spacer(minLength: 0)
+
+                Image(systemName: "chevron.right")
+                    .font(AppFont.system(size: 8, weight: .semibold))
+                    .foregroundStyle(.quaternary)
+            }
+            .padding(8)
+            .background(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .fill(Color(.secondarySystemBackground).opacity(0.55))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .stroke(Color(.separator).opacity(0.55), lineWidth: 1)
+            )
+        }
+        .buttonStyle(.plain)
+        .disabled(isLoadingImagePreview)
+    }
+
+    private func loadImagePreview(_ reference: CommandOutputImageReference) {
+        guard !isLoadingImagePreview else { return }
+        isLoadingImagePreview = true
+
+        Task { @MainActor in
+            defer { isLoadingImagePreview = false }
+            do {
+                let cachedPreview = await WorkspaceImagePreviewCache.shared.cachedPreview(forPath: reference.path)
+                let result = try await codex.readWorkspaceImage(
+                    path: reference.path,
+                    cwd: detailModel?.cwd,
+                    cachedMetadata: cachedPreview?.metadata
+                )
+                if result.isNotModified, let cachedPreview {
+                    previewImage = PreviewImagePayload(
+                        image: cachedPreview.payload.image,
+                        title: cachedPreview.metadata.fileName.isEmpty ? reference.fileName : cachedPreview.metadata.fileName
+                    )
+                    return
+                }
+
+                let decodedImage = try await WorkspaceImagePreviewCache.shared.preview(for: result)
+                previewImage = PreviewImagePayload(
+                    image: decodedImage.image,
+                    title: result.fileName.isEmpty ? reference.fileName : result.fileName
+                )
+            } catch {
+                imagePreviewError = error.localizedDescription
+            }
+        }
+    }
+
+    private var imagePreviewErrorIsPresented: Binding<Bool> {
+        Binding(
+            get: { imagePreviewError != nil },
+            set: { isPresented in
+                if !isPresented {
+                    imagePreviewError = nil
+                }
+            }
+        )
+    }
+}
+
+private struct AssistantWorkspaceImagePreviewRequest: Identifiable {
+    let id = UUID()
+    let reference: AssistantMarkdownImageReference
+    let currentWorkingDirectory: String?
+    let initialPayload: PreviewImagePayload?
+}
+
+private struct AssistantWorkspaceImagePreviewScreen: View {
+    let reference: AssistantMarkdownImageReference
+    let currentWorkingDirectory: String?
+    let onDismiss: () -> Void
+
+    @Environment(CodexService.self) private var codex
+    @State private var isLoading = false
+    @State private var payload: PreviewImagePayload?
+    @State private var errorMessage: String?
+
+    init(
+        reference: AssistantMarkdownImageReference,
+        currentWorkingDirectory: String?,
+        initialPayload: PreviewImagePayload? = nil,
+        onDismiss: @escaping () -> Void
+    ) {
+        self.reference = reference
+        self.currentWorkingDirectory = currentWorkingDirectory
+        self.onDismiss = onDismiss
+        _payload = State(initialValue: initialPayload)
+    }
+
+    var body: some View {
+        Group {
+            if let payload {
+                ZoomableImagePreviewScreen(
+                    payload: payload,
+                    onDismiss: onDismiss
+                )
+            } else {
+                loadingOrErrorScreen
+            }
+        }
+        .task(id: reference.path) {
+            await loadPreview()
+        }
+    }
+
+    private var loadingOrErrorScreen: some View {
+        ZStack(alignment: .top) {
+            Color(.systemBackground)
+                .ignoresSafeArea()
+
+            LinearGradient(
+                colors: [
+                    Color(.secondarySystemBackground).opacity(0.7),
+                    Color(.systemBackground)
+                ],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+            .ignoresSafeArea()
+
+            VStack(spacing: 18) {
+                Spacer(minLength: 0)
+
+                if isLoading || errorMessage == nil {
+                    ProgressView()
+                        .controlSize(.large)
+                    Text(reference.fileName.isEmpty ? "Loading image" : reference.fileName)
+                        .font(AppFont.subheadline(weight: .semibold))
+                        .foregroundStyle(.primary)
+                        .lineLimit(2)
+                        .multilineTextAlignment(.center)
+                } else {
+                    Image(systemName: "photo")
+                        .font(AppFont.system(size: 32, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                    Text(reference.fileName.isEmpty ? "Image unavailable" : reference.fileName)
+                        .font(AppFont.subheadline(weight: .semibold))
+                        .foregroundStyle(.primary)
+                        .lineLimit(2)
+                        .multilineTextAlignment(.center)
+                    if let errorMessage {
+                        Text(errorMessage)
+                            .font(AppFont.caption())
+                            .foregroundStyle(.secondary)
+                            .multilineTextAlignment(.center)
+                            .lineLimit(4)
+                    }
+                    Button {
+                        Task { await loadPreview(force: true) }
+                    } label: {
+                        Label("Retry", systemImage: "arrow.clockwise")
+                            .font(AppFont.subheadline(weight: .semibold))
+                            .padding(.horizontal, 16)
+                            .frame(height: 40)
+                            .adaptiveGlass(.regular, in: Capsule())
+                    }
+                    .buttonStyle(.plain)
+                }
+
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 28)
+
+            topBar
+                .padding(.horizontal, 18)
+                .padding(.top, 18)
+        }
+    }
+
+    private var topBar: some View {
+        HStack(spacing: 14) {
+            Button {
+                HapticFeedback.shared.triggerImpactFeedback(style: .light)
+                onDismiss()
+            } label: {
+                Image(systemName: "xmark")
+                    .font(AppFont.system(size: 17, weight: .semibold))
+                    .foregroundStyle(.primary)
+                    .frame(width: 38, height: 38)
+                    .adaptiveGlass(.regular, in: Circle())
+                    .contentShape(Circle())
+            }
+            .buttonStyle(.plain)
+
+            if !reference.fileName.isEmpty {
+                Text(reference.fileName)
+                    .font(AppFont.subheadline(weight: .semibold))
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+                    .padding(.horizontal, 14)
+                    .frame(height: 38)
+                    .adaptiveGlass(.regular, in: Capsule())
+            }
+
+            Spacer(minLength: 0)
+        }
+    }
+
+    @MainActor
+    private func loadPreview(force: Bool = false) async {
+        guard !isLoading else { return }
+        if payload != nil, !force {
+            return
+        }
+
+        isLoading = true
+        errorMessage = nil
+        defer { isLoading = false }
+
+        do {
+            payload = try await AssistantWorkspaceImagePreviewLoader.load(
+                reference: reference,
+                currentWorkingDirectory: currentWorkingDirectory,
+                codex: codex,
+                force: force
+            )
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+}
+
+private enum AssistantWorkspaceImagePreviewLoader {
+    @MainActor
+    static func load(
+        reference: AssistantMarkdownImageReference,
+        currentWorkingDirectory: String?,
+        codex: CodexService,
+        force: Bool = false
+    ) async throws -> PreviewImagePayload {
+        let cachedPreview = await WorkspaceImagePreviewCache.shared.cachedPreview(forPath: reference.path)
+        let result = try await codex.readWorkspaceImage(
+            path: reference.path,
+            cwd: currentWorkingDirectory,
+            cachedMetadata: force ? nil : cachedPreview?.metadata
+        )
+        if result.isNotModified, let cachedPreview {
+            return PreviewImagePayload(
+                image: cachedPreview.payload.image,
+                title: cachedPreview.metadata.fileName.isEmpty ? reference.fileName : cachedPreview.metadata.fileName
+            )
+        }
+
+        let decodedImage = try await WorkspaceImagePreviewCache.shared.preview(for: result)
+        return PreviewImagePayload(
+            image: decodedImage.image,
+            title: result.fileName.isEmpty ? reference.fileName : result.fileName
+        )
+    }
+}
+
+private struct CachedWorkspaceImagePreview: Sendable {
+    let metadata: WorkspaceImageMetadata
+    let payload: CommandImagePreviewPayload
+}
+
+private final class CommandImagePreviewPayload: @unchecked Sendable {
+    let image: UIImage
+
+    init(image: UIImage) {
+        self.image = image
+    }
+
+    var estimatedMemoryCost: Int {
+        guard let cgImage = image.cgImage else {
+            return 1
+        }
+        return max(cgImage.bytesPerRow * cgImage.height, 1)
+    }
+}
+
+private actor WorkspaceImagePreviewCache {
+    static let shared = WorkspaceImagePreviewCache()
+
+    private let cache = NSCache<NSString, CommandImagePreviewPayload>()
+    private var inFlightPreviews: [String: Task<CommandImagePreviewPayload, Error>] = [:]
+    private var latestMetadataByPath: [String: WorkspaceImageMetadata] = [:]
+    private var latestMetadataAccessOrder: [String] = []
+
+    private init() {
+        cache.countLimit = 24
+        cache.totalCostLimit = 80 * 1024 * 1024
+    }
+
+    func cachedPreview(forPath path: String) -> CachedWorkspaceImagePreview? {
+        guard let metadata = latestMetadataByPath[path],
+              let payload = cache.object(forKey: cacheKey(for: metadata) as NSString) else {
+            return nil
+        }
+        latestMetadataAccessOrder.removeAll { $0 == path }
+        latestMetadataAccessOrder.append(path)
+        return CachedWorkspaceImagePreview(metadata: metadata, payload: payload)
+    }
+
+    func preview(for result: WorkspaceImageReadResult) async throws -> CommandImagePreviewPayload {
+        let key = cacheKey(for: result.metadata)
+        let nsKey = key as NSString
+        if let cached = cache.object(forKey: nsKey) {
+            return cached
+        }
+        if let task = inFlightPreviews[key] {
+            return try await task.value
+        }
+
+        guard let data = result.data else {
+            throw CodexServiceError.invalidResponse("Cached image preview was unavailable.")
+        }
+        let task = Task(priority: .userInitiated) {
+            try await CommandImagePreviewDecoder.decode(data)
+        }
+        inFlightPreviews[key] = task
+        defer { inFlightPreviews[key] = nil }
+
+        let decodedImage = try await task.value
+        cache.setObject(decodedImage, forKey: nsKey, cost: decodedImage.estimatedMemoryCost)
+        rememberMetadata(result.metadata)
+        return decodedImage
+    }
+
+    private func cacheKey(for metadata: WorkspaceImageMetadata) -> String {
+        let mtimeMs = metadata.mtimeMs.map { String($0.bitPattern) } ?? "missing"
+        let previewMax = metadata.previewMaxPixelDimension.map(String.init) ?? "original"
+        return "\(metadata.path)|\(metadata.byteLength)|\(mtimeMs)|\(previewMax)"
+    }
+
+    private func rememberMetadata(_ metadata: WorkspaceImageMetadata) {
+        latestMetadataByPath[metadata.path] = metadata
+        latestMetadataAccessOrder.removeAll { $0 == metadata.path }
+        latestMetadataAccessOrder.append(metadata.path)
+
+        while latestMetadataAccessOrder.count > 64, let evictedPath = latestMetadataAccessOrder.first {
+            latestMetadataAccessOrder.removeFirst()
+            latestMetadataByPath[evictedPath] = nil
+        }
+    }
+}
+
+private enum CommandImagePreviewDecoder {
+    private static let maxPreviewPixelDimension = 2_400
+
+    // Downsamples and prepares the preview off the main actor before presenting it.
+    static func decode(_ data: Data) async throws -> CommandImagePreviewPayload {
+        try await Task.detached(priority: .userInitiated) {
+            let sourceOptions = [kCGImageSourceShouldCache: false] as CFDictionary
+            guard let source = CGImageSourceCreateWithData(data as CFData, sourceOptions) else {
+                throw CodexServiceError.invalidResponse("The file is not a readable image.")
+            }
+
+            let thumbnailOptions = [
+                kCGImageSourceCreateThumbnailFromImageAlways: true,
+                kCGImageSourceCreateThumbnailWithTransform: true,
+                kCGImageSourceShouldCacheImmediately: true,
+                kCGImageSourceThumbnailMaxPixelSize: maxPreviewPixelDimension,
+            ] as CFDictionary
+
+            if let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, thumbnailOptions) {
+                return CommandImagePreviewPayload(image: UIImage(cgImage: cgImage))
+            }
+
+            guard let image = UIImage(data: data) else {
+                throw CodexServiceError.invalidResponse("The file is not a readable image.")
+            }
+            return CommandImagePreviewPayload(image: image.preparingForDisplay() ?? image)
+        }.value
     }
 }
 

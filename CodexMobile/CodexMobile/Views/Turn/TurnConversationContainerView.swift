@@ -19,6 +19,7 @@ struct TurnConversationContainerView: View {
     let planSessionSource: CodexPlanSessionSource?
     let allowsAssistantPlanFallbackRecovery: Bool
     let threadMessagesForPlanMatching: [CodexMessage]
+    let currentWorkingDirectory: String?
     let errorMessage: String?
     let composerRecoveryAccessory: AnyView?
     let shouldAnchorToAssistantResponse: Binding<Bool>
@@ -96,6 +97,7 @@ struct TurnConversationContainerView: View {
                 planSessionSource: planSessionSource,
                 allowsAssistantPlanFallbackRecovery: allowsAssistantPlanFallbackRecovery,
                 threadMessagesForPlanMatching: threadMessagesForPlanMatching,
+                currentWorkingDirectory: currentWorkingDirectory,
                 isRetryAvailable: !isThreadRunning,
                 errorMessage: errorMessage,
                 hidesErrorMessage: composerRecoveryAccessory != nil,
@@ -134,6 +136,7 @@ struct TurnConversationContainerView: View {
                 isShowingPinnedPlanSheet = false
             }
         }
+        .ignoresSafeArea(.container, edges: .top)
         .sheet(isPresented: $isShowingPinnedPlanSheet) {
             if let pinnedTaskPlanMessage = messageLayout.pinnedTaskPlanMessage {
                 PlanExecutionSheet(message: pinnedTaskPlanMessage)

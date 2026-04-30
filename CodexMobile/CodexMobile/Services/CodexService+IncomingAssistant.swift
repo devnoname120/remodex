@@ -95,9 +95,15 @@ extension CodexService {
                 paramsObject: paramsObject,
                 eventObject: eventObject
             ) else { return }
+            let turnId = assistantCompletionTurnId(
+                context: context,
+                paramsObject: paramsObject,
+                eventObject: eventObject,
+                itemObject: nil
+            )
             completeAssistantMessage(
                 threadId: context.threadId,
-                turnId: context.identity.turnId,
+                turnId: turnId,
                 itemId: context.identity.itemId,
                 text: text
             )
@@ -105,6 +111,15 @@ extension CodexService {
         }
 
         let itemType = normalizedItemType(itemObject["type"]?.stringValue ?? "")
+        if isCompletedGeneratedImageItemType(itemType) {
+            appendCompletedGeneratedImageItem(
+                itemObject: itemObject,
+                paramsObject: paramsObject,
+                eventObject: eventObject
+            )
+            return
+        }
+
         if handleStructuredItemLifecycle(
             itemObject: itemObject,
             paramsObject: paramsObject,
@@ -148,12 +163,65 @@ extension CodexService {
             eventObject: eventObject,
             itemObject: itemObject
         ) else { return }
+        let turnId = assistantCompletionTurnId(
+            context: context,
+            paramsObject: paramsObject,
+            eventObject: eventObject,
+            itemObject: itemObject
+        )
         completeAssistantMessage(
             threadId: context.threadId,
-            turnId: context.identity.turnId,
+            turnId: turnId,
             itemId: context.identity.itemId,
             text: text
         )
+    }
+
+    func isCompletedGeneratedImageItemType(_ itemType: String) -> Bool {
+        itemType == "imagegeneration"
+            || itemType == "imagegenerationcall"
+            || itemType == "imagegenerationend"
+            || itemType == "imageview"
+    }
+
+    // Converts live generated-image completion items into the same markdown preview used by history.
+    func appendCompletedGeneratedImageItem(
+        itemObject: IncomingParamsObject,
+        paramsObject: IncomingParamsObject,
+        eventObject: IncomingParamsObject?
+    ) {
+        let itemType = normalizedItemType(itemObject["type"]?.stringValue ?? "")
+        let itemId = extractAssistantMessageItemID(
+            paramsObject: paramsObject,
+            eventObject: eventObject,
+            itemObject: itemObject
+        ) ?? ""
+        let imagePath = firstNonEmptyString([
+            firstStringValue(in: itemObject, keys: ["saved_path", "savedPath", "path", "file_path"]),
+            firstStringValue(in: eventObject, keys: ["saved_path", "savedPath", "path", "file_path"]),
+            firstStringValue(in: paramsObject, keys: ["saved_path", "savedPath", "path", "file_path"])
+        ])
+        guard let imagePath, Self.isGeneratedImagePath(imagePath) else {
+            debugRuntimeLog("generated image item dropped type=\(itemType) item=\(itemId) reason=missing-path")
+            return
+        }
+
+        guard let context = resolveAssistantEventContext(
+            paramsObject: paramsObject,
+            eventObject: eventObject,
+            itemObject: itemObject
+        ) else {
+            debugRuntimeLog("generated image item dropped type=\(itemType) item=\(itemId) path=\(URL(fileURLWithPath: imagePath).lastPathComponent) reason=missing-context")
+            return
+        }
+
+        appendGeneratedImageReference(
+            threadId: context.threadId,
+            turnId: context.identity.turnId,
+            itemId: context.identity.itemId,
+            imagePath: imagePath
+        )
+        debugRuntimeLog("generated image item appended type=\(itemType) thread=\(context.threadId) turn=\(context.identity.turnId ?? "") item=\(context.identity.itemId ?? "") path=\(URL(fileURLWithPath: imagePath).lastPathComponent)")
     }
 
     // Creates streaming assistant placeholder when an assistant item starts.
@@ -281,6 +349,36 @@ private extension CodexService {
         }
 
         return AssistantEventContext(threadId: threadId, identity: identity)
+    }
+
+    // Codex app-server can emit final_answer text before task_complete without
+    // repeating turnId; bind that terminal text to the active turn for this thread.
+    func assistantCompletionTurnId(
+        context: AssistantEventContext,
+        paramsObject: IncomingParamsObject,
+        eventObject: IncomingParamsObject?,
+        itemObject: IncomingParamsObject?
+    ) -> String? {
+        if let turnId = context.identity.turnId {
+            return turnId
+        }
+        guard isFinalAnswerPhase(paramsObject: paramsObject, eventObject: eventObject, itemObject: itemObject) else {
+            return nil
+        }
+        return activeTurnIdByThread[context.threadId]
+    }
+
+    func isFinalAnswerPhase(
+        paramsObject: IncomingParamsObject,
+        eventObject: IncomingParamsObject?,
+        itemObject: IncomingParamsObject?
+    ) -> Bool {
+        let phase = firstNonEmptyString([
+            paramsObject["phase"]?.stringValue,
+            eventObject?["phase"]?.stringValue,
+            itemObject?["phase"]?.stringValue,
+        ])?.lowercased()
+        return phase == "final_answer"
     }
 
     // Checks if an incoming item payload should render as assistant prose.
