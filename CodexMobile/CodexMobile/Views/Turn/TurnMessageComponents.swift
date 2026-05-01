@@ -1972,13 +1972,19 @@ private struct ThinkingDisclosureView: View {
     }
 
     private func detailText(_ value: String) -> some View {
-        Text(.init(value))
+        Text(runtimeMarkdownText(value))
             .font(AppFont.caption())
             .lineSpacing(2)
             .fontWeight(.regular)
             .foregroundStyle(.secondary.opacity(0.85))
             .textSelection(.enabled)
             .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func runtimeMarkdownText(_ value: String) -> AttributedString {
+        var options = AttributedString.MarkdownParsingOptions()
+        options.interpretedSyntax = .inlineOnlyPreservingWhitespace
+        return (try? AttributedString(markdown: value, options: options)) ?? AttributedString(value)
     }
 }
 
